@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <title>Simulador de Vuelo 3D Básico</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: 'Arial', sans-serif; 
+            background-color: #87CEEB; /* Color cielo de fondo */
+        }
+        canvas { 
+            display: block; 
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 15px;
+            background-color: rgba(0,0,0,0.6);
+            color: white;
+            border-radius: 8px;
+            font-size: 14px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        /* Estilo para un mensaje de carga (opcional, si la carga fuera más pesada) */
+        #loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #333;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            z-index: 100; /* Asegura que esté por encima de todo */
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-screen">Cargando Simulador...</div>
+    <div id="info">
+        Controles: Flechas/WASD para dirección | Espacio para acelerar | Shift para desacelerar
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // Variables globales de la simulación
+        let scene, camera, renderer, clock;
+        let airplane, propeller;
+        let currentSpeed = 8, minSpeed = 3, maxSpeed = 30, accelerationFactor = 0.15;
+        const rotationSpeedFactor = Math.PI / 2.5; // Radianes por segundo para rotación
+
+        const keysPressed = {}; // Objeto para rastrear las teclas presionadas
+
+        // --- INICIALIZACIÓN ---
+        function init() {
+            // Ocultar pantalla de carga
+            const loadingScreen = document.getElementById('loading-screen');
+            if (loadingScreen) loadingScreen.style.display = 'none';
+
+            // Escena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Color cielo
+            scene.fog = new THREE.Fog(0x87CEEB, 100, 450); // Niebla para efecto de profundidad
+
+            // Cámara
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; // Habilitar sombras
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Sombras más suaves
+            document.body.appendChild(renderer.domElement);
+
+            // Reloj para deltaTime
+            clock = new THREE.Clock();
+
+            // Luces
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Luz ambiental suave
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Luz direccional (sol)
+            directionalLight.position.set(50, 80, 30);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048; // Calidad de sombra
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 200;
+            directionalLight.shadow.camera.left = -100;
+            directionalLight.shadow.camera.right = 100;
+            directionalLight.shadow.camera.top = 100;
+            directionalLight.shadow.camera.bottom = -100;
+            scene.add(directionalLight);
+            // const helper = new THREE.CameraHelper( directionalLight.shadow.camera ); // Ayudante para depurar sombras
+            // scene.add( helper );
+
+            // Avión
+            airplane = createAirplane();
+            airplane.position.set(0, 30, 0); // Posición inicial del avión
+            airplane.rotation.y = Math.PI; // Orientar hacia "adentro" de la escena inicialmente
+            scene.add(airplane);
+
+            // Entorno (suelo y edificios)
+            createEnvironment();
+
+            // Configuración inicial de la cámara para seguir al avión
+            updateCamera(); // Posiciona la cámara correctamente al inicio
+            camera.lookAt(airplane.position);
+
+            // Event Listeners
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize);
+
+            // Iniciar bucle de animación
+            animate();
+        }
+
+        // --- CREACIÓN DE OBJETOS ---
+        function createAirplane() {
+            const airplaneGroup = new THREE.Group();
+            const mainMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.7, roughness: 0.4 });
+            const accentMaterial = new THREE.MeshStandardMaterial({ color: 0xbb0000, metalness: 0.6, roughness: 0.5 }); // Rojo para acentos
+
+            // Fuselaje (Cuerpo del avión)
+            const fuselageGeometry = new THREE.CylinderGeometry(0.6, 0.4, 6, 20);
+            const fuselage = new THREE.Mesh(fuselageGeometry, mainMaterial);
+            fuselage.rotation.x = Math.PI / 2; // Orientar horizontalmente
+            fuselage.castShadow = true;
+            airplaneGroup.add(fuselage);
+
+            // Alas principales
+            const wingGeometry = new THREE.BoxGeometry(9, 0.25, 2); // ancho (envergadura), alto (grosor), profundo (cuerda)
+            const mainWings = new THREE.Mesh(wingGeometry, mainMaterial);
+            mainWings.position.set(0, 0, 0.5); // Ligeramente hacia adelante en el fuselaje
+            mainWings.castShadow = true;
+            airplaneGroup.add(mainWings);
+
+            // Cabina
+            const cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x6699CC, metalness: 0.3, roughness: 0.2, transparent: true, opacity: 0.75 });
+            const cockpitGeometry = new THREE.SphereGeometry(0.5, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2); // Media esfera
+            const cockpit = new THREE.Mesh(cockpitGeometry, cockpitMaterial);
+            cockpit.position.set(0, 0.4, 2.2); // Encima y hacia el frente del fuselaje
+            cockpit.rotation.x = -Math.PI / 18; // Ligera inclinación
+            cockpit.castShadow = true;
+            airplaneGroup.add(cockpit);
+
+            // Estabilizador Vertical (Cola)
+            const tailFinGeometry = new THREE.BoxGeometry(0.2, 1.5, 1);
+            const tailFin = new THREE.Mesh(tailFinGeometry, accentMaterial); // Usar color de acento
+            // Fuselaje trasero en Z = -3. Radio fuselaje trasero = 0.4. Altura estabilizador = 1.5.
+            tailFin.position.set(0, 0.4 + 1.5/2 - 0.2, -3 + 1/2); 
+            tailFin.castShadow = true;
+            airplaneGroup.add(tailFin);
+
+            // Estabilizadores Horizontales (Cola)
+            const hStabGeometry = new THREE.BoxGeometry(3.5, 0.15, 1.2);
+            const hStabs = new THREE.Mesh(hStabGeometry, mainMaterial);
+            hStabs.position.set(0, 0, -3 + 1.2/2); // Centrado en Z, en la parte trasera
+            hStabs.castShadow = true;
+            airplaneGroup.add(hStabs);
+            
+            // Hélice
+            propeller = new THREE.Group(); // Usar la variable global 'propeller'
+            const propellerMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.9, roughness: 0.3 });
+            const bladeGeometry = new THREE.BoxGeometry(0.1, 1.8, 0.15); // Grosor, Largo, Ancho de la pala
+
+            const blade1 = new THREE.Mesh(bladeGeometry, propellerMaterial);
+            blade1.castShadow = true;
+            propeller.add(blade1);
+
+            const blade2 = blade1.clone();
+            blade2.rotation.y = Math.PI / 2; // Rotar para formar una 'X' o cruz
+            blade2.castShadow = true;
+            propeller.add(blade2);
+            
+            // Cono de la hélice
+            const spinnerGeometry = new THREE.SphereGeometry(0.25, 12, 8);
+            const spinner = new THREE.Mesh(spinnerGeometry, mainMaterial);
+            spinner.castShadow = true;
+            propeller.add(spinner);
+
+            propeller.position.z = 3.1; // Posicionar la hélice al frente del fuselaje (fuselaje Z va de -3 a 3)
+            airplaneGroup.add(propeller);
+
+            return airplaneGroup;
+        }
+
+        function createEnvironment() {
+            // Suelo
+            const groundTexture = createProceduralGrassTexture();
+            const groundMaterial = new THREE.MeshStandardMaterial({ map: groundTexture, roughness: 0.95, metalness: 0.1 });
+            const groundGeometry = new THREE.PlaneGeometry(600, 600, 50, 50); // Aumentar segmentos para mejor interacción con niebla/luz
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2; // Rotar para que sea horizontal
+            ground.position.y = 0;
+            ground.receiveShadow = true; // El suelo recibe sombras
+            scene.add(ground);
+
+            // Edificios
+            const buildingColors = [0xaaaaaa, 0xbbbbbb, 0xcccccc, 0x999999, 0x888888];
+            const numBuildings = 70;
+            const buildingBaseSize = 8;
+
+            for (let i = 0; i < numBuildings; i++) {
+                const width = buildingBaseSize + Math.random() * 10;
+                const height = 10 + Math.random() * 40; // Variedad de alturas
+                const depth = buildingBaseSize + Math.random() * 10;
+                
+                const buildingGeometry = new THREE.BoxGeometry(width, height, depth);
+                const buildingMaterial = new THREE.MeshStandardMaterial({ 
+                    color: buildingColors[Math.floor(Math.random() * buildingColors.length)],
+                    metalness: 0.4,
+                    roughness: 0.7
+                });
+                const building = new THREE.Mesh(buildingGeometry, buildingMaterial);
+
+                const xPos = (Math.random() - 0.5) * 550; // Distribuir en el suelo
+                const zPos = (Math.random() - 0.5) * 550;
+                
+                building.position.set(xPos, height / 2, zPos); // La base del edificio está en y=0
+                building.castShadow = true;
+                building.receiveShadow = true; // Edificios también pueden recibir sombras de otros
+                scene.add(building);
+            }
+        }
+        
+        function createProceduralGrassTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; // Textura más grande para mejor detalle
+            canvas.height = 128;
+            const context = canvas.getContext('2d');
+
+            // Base de color verde oscuro
+            context.fillStyle = '#3E7D3B'; // Verde oscuro para el suelo
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            // "Briznas" de hierba más claras
+            for (let i = 0; i < 8000; i++) { // Más briznas para densidad
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const length = Math.random() * 5 + 2; // Longitud de la brizna
+                const angle = (Math.random() - 0.5) * 0.5; // Ligera variación de ángulo
+
+                // Color aleatorio entre dos tonos de verde claro
+                context.fillStyle = Math.random() < 0.6 ? '#5DBB63' : '#4CAF50';
+                
+                context.beginPath();
+                context.moveTo(x, y);
+                // Dibujar una línea fina o un rectángulo muy delgado
+                context.lineTo(x + Math.sin(angle) * length * 0.3, y - Math.cos(angle) * length);
+                context.lineWidth = Math.random() * 0.5 + 0.5; // Grosor variable
+                context.stroke(); // Usar stroke para líneas más finas
+            }
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(100, 100); // Repetir la textura sobre el suelo
+            texture.anisotropy = renderer.capabilities.getMaxAnisotropy() / 2; // Mejorar calidad visual en ángulos
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+
+        // --- MANEJO DE ENTRADA (TECLADO) ---
+        function onKeyDown(event) {
+            keysPressed[event.key.toLowerCase()] = true;
+        }
+
+        function onKeyUp(event) {
+            keysPressed[event.key.toLowerCase()] = false;
+        }
+
+        function processInput(deltaTime) {
+            const effectiveRotationSpeed = rotationSpeedFactor * deltaTime;
+            
+            // Pitch (Cabeceo: subir/bajar morro)
+            if (keysPressed['w'] || keysPressed['arrowup']) {
+                airplane.rotateX(effectiveRotationSpeed); // Morro abajo
+            }
+            if (keysPressed['s'] || keysPressed['arrowdown']) {
+                airplane.rotateX(-effectiveRotationSpeed); // Morro arriba
+            }
+
+            // Yaw (Guiñada: girar izquierda/derecha)
+            if (keysPressed['a'] || keysPressed['arrowleft']) {
+                airplane.rotateY(effectiveRotationSpeed); // Guiñada a la izquierda
+            }
+            if (keysPressed['d'] || keysPressed['arrowright']) {
+                airplane.rotateY(-effectiveRotationSpeed); // Guiñada a la derecha
+            }
+            
+            // Roll (Alabeo: opcional, no implementado para simplicidad)
+            // if (keysPressed['q']) { airplane.rotateZ(effectiveRotationSpeed); }
+            // if (keysPressed['e']) { airplane.rotateZ(-effectiveRotationSpeed); }
+
+
+            // Velocidad
+            if (keysPressed[' ']) { // Barra espaciadora para acelerar
+                currentSpeed += accelerationFactor;
+                currentSpeed = Math.min(currentSpeed, maxSpeed);
+            }
+            if (keysPressed['shift']) { // Shift para desacelerar
+                currentSpeed -= accelerationFactor;
+                currentSpeed = Math.max(currentSpeed, minSpeed);
+            }
+        }
+
+        // --- ACTUALIZACIÓN DE ESTADO Y CÁMARA ---
+        function updateGameObjects(deltaTime) {
+            // Mover el avión hacia adelante según su orientación local Z
+            airplane.translateZ(currentSpeed * deltaTime);
+
+            // Animar la hélice
+            if (propeller) {
+                // La rotación es alrededor del eje Y local de la hélice si las palas están en el plano XZ de la hélice.
+                // O eje Z local si las palas están en el plano XY de la hélice.
+                // Con BoxGeometry(0.1, 1.8, 0.15) y blade2.rotation.y, la rotación principal es alrededor del eje Z de la hélice.
+                propeller.rotation.z += 25 * deltaTime * (currentSpeed / maxSpeed + 0.2); 
+            }
+        }
+
+        function updateCamera() {
+            // Desplazamiento deseado de la cámara respecto al avión (detrás y ligeramente arriba)
+            const cameraOffset = new THREE.Vector3(0, 5, -15); 
+            
+            // Calcular la posición deseada de la cámara en el espacio del mundo
+            // Se aplica la rotación del avión al desplazamiento y luego se suma a la posición del avión
+            const desiredCameraPosition = airplane.localToWorld(cameraOffset.clone());
+            
+            // Interpolar suavemente la posición de la cámara hacia la posición deseada
+            // El factor 0.08 controla la suavidad del seguimiento (valores más pequeños son más suaves)
+            camera.position.lerp(desiredCameraPosition, 0.08);
+
+            // La cámara siempre mira a la posición del avión
+            const lookAtPosition = new THREE.Vector3();
+            airplane.getWorldPosition(lookAtPosition); // Obtener la posición actual del avión en el mundo
+            camera.lookAt(lookAtPosition);
+        }
+
+        // --- BUCLE DE ANIMACIÓN ---
+        function animate() {
+            requestAnimationFrame(animate); // Solicitar el próximo frame
+            const deltaTime = clock.getDelta(); // Tiempo transcurrido desde el último frame
+
+            processInput(deltaTime);    // Procesar entrada del usuario
+            updateGameObjects(deltaTime); // Actualizar posición y estado de los objetos
+            updateCamera();             // Actualizar posición y orientación de la cámara
+            
+            renderer.render(scene, camera); // Renderizar la escena
+        }
+
+        // --- MANEJO DE REDIMENSIONAMIENTO DE VENTANA ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Iniciar la simulación cuando el script se cargue
+        // Usar window.onload para asegurar que Three.js esté cargado y el DOM listo
+        window.onload = init;
+
+    </script>
+</body>
+</html>
